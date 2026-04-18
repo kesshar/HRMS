@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const connectDB = async () => {
   try {
     // Use hardcoded URI for now since .env has formatting issues
-    const uri = "mongodb+srv://admin:Psingh%4012345@cluster0.dti89.mongodb.net/mini_ai_hrms?retryWrites=true&w=majority";
+    const uri = process.env.MONGO_URI;
     const conn = await mongoose.connect(uri);
 
     console.log(`MongoDB Connected: ${conn.connection.host}`);
