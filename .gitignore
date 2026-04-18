@@ -35,3 +35,6 @@ frontend/.env
 *.njsproj
 *.sln
 *.sw?
+
+firebase
+frontend/src/firebase.js
