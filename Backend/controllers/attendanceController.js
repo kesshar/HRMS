@@ -1,5 +1,110 @@
 const Attendance = require('../models/Attendance');
 const Employee = require('../models/Employee');
+const AttendanceTimer = require('../models/AttendanceTimer');
+
+const ATTENDANCE_TIMER_SECONDS = 60;
+
+const isAdminRole = (role) => ['ADMIN', 'HR'].includes((role || '').toString().toUpperCase());
+
+const getDateKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const serializeTimer = (timer) => {
+  const now = new Date();
+
+  if (!timer) {
+    return {
+      status: 'not_started',
+      hasStartedToday: false,
+      remainingSeconds: 0,
+      durationSeconds: ATTENDANCE_TIMER_SECONDS,
+      serverNow: now.toISOString(),
+      startedAt: null,
+      expiresAt: null
+    };
+  }
+
+  const remainingMs = Math.max(0, timer.expiresAt.getTime() - now.getTime());
+  const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+  return {
+    status: remainingSeconds > 0 ? 'running' : 'expired',
+    hasStartedToday: true,
+    remainingSeconds,
+    durationSeconds: timer.durationSeconds || ATTENDANCE_TIMER_SECONDS,
+    serverNow: now.toISOString(),
+    startedAt: timer.startedAt.toISOString(),
+    expiresAt: timer.expiresAt.toISOString()
+  };
+};
+
+const getTodayTimer = (organizationId) => (
+  AttendanceTimer.findOne({
+    organization: organizationId,
+    dateKey: getDateKey()
+  })
+);
+
+const getCurrentTimerStatus = async (req, res) => {
+  try {
+    const timer = await getTodayTimer(req.organizationId);
+    res.status(200).json(serializeTimer(timer));
+  } catch (error) {
+    console.error('Error in getCurrentTimerStatus:', error.stack || error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const startAttendanceTimer = async (req, res) => {
+  try {
+    if (!isAdminRole(req.role)) {
+      return res.status(403).json({ message: 'Only HR can start the attendance timer' });
+    }
+
+    const organizationId = req.organizationId;
+    const now = new Date();
+    const dateKey = getDateKey(now);
+    const expiresAt = new Date(now.getTime() + ATTENDANCE_TIMER_SECONDS * 1000);
+
+    const existingTimer = await AttendanceTimer.findOne({
+      organization: organizationId,
+      dateKey
+    });
+
+    if (existingTimer) {
+      return res.status(409).json({
+        message: 'Attendance timer has already been started for today',
+        timer: serializeTimer(existingTimer)
+      });
+    }
+
+    const timer = await AttendanceTimer.create({
+      organization: organizationId,
+      dateKey,
+      startedAt: now,
+      expiresAt,
+      durationSeconds: ATTENDANCE_TIMER_SECONDS,
+      startedBy: req.user.id
+    });
+
+    res.status(201).json(serializeTimer(timer));
+  } catch (error) {
+    if (error.code === 11000) {
+      const timer = await getTodayTimer(req.organizationId);
+      return res.status(409).json({
+        message: 'Attendance timer has already been started for today',
+        timer: serializeTimer(timer)
+      });
+    }
+
+    console.error('Error in startAttendanceTimer:', error.stack || error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
 
 // Check in
 const checkIn = async (req, res, next) => {
@@ -7,6 +112,16 @@ const checkIn = async (req, res, next) => {
     const { latitude, longitude, address } = req.body;
     const employeeId = req.user.id;
     const organizationId = req.organizationId;
+    const timer = await getTodayTimer(organizationId);
+    const timerStatus = serializeTimer(timer);
+
+    if (timerStatus.status !== 'running') {
+      return res.status(403).json({
+        message: timerStatus.status === 'not_started'
+          ? 'Attendance timer has not been started by HR yet'
+          : 'Attendance timer has expired for today'
+      });
+    }
 
     // Check if already checked in today
     const today = new Date();
@@ -322,206 +437,6 @@ const getAttendanceStats = async (req, res, next) => {
 };
 
 
-// ============================================================
-//  QR Session Management
-// ============================================================
-const AttendanceSession = require('../models/AttendanceSession');
-const crypto = require('crypto');
-
-// Haversine distance in metres between two lat/lon points
-const haversineDistance = (lat1, lon1, lat2, lon2) => {
-  const R = 6371000; // Earth radius in metres
-  const toRad = (deg) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-};
-
-// POST /attendance/qr/generate  (admin only)
-const generateQRSession = async (req, res, next) => {
-  try {
-    const organizationId = req.organizationId;
-    if (!organizationId) {
-      return res.status(400).json({ message: 'Organization context missing' });
-    }
-
-    const sessionId = crypto.randomUUID();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 60 * 1000); // 60 seconds
-
-    // Deactivate any existing active sessions for this org
-    await AttendanceSession.updateMany(
-      { organization: organizationId, isActive: true },
-      { isActive: false }
-    );
-
-    const session = await AttendanceSession.create({
-      organization: organizationId,
-      sessionId,
-      createdAt: now,
-      expiresAt,
-      isActive: true,
-      generatedBy: req.user?.id
-    });
-
-    res.status(201).json({
-      sessionId: session.sessionId,
-      timestamp: now.toISOString(),
-      expiresAt: expiresAt.toISOString()
-    });
-  } catch (error) {
-    console.error('Error in generateQRSession:', error.stack || error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
-
-
-// GET /attendance/qr/active  (admin only)
-const getActiveSession = async (req, res, next) => {
-  try {
-    const organizationId = req.organizationId;
-    const now = new Date();
-
-    const session = await AttendanceSession.findOne({
-      organization: organizationId,
-      isActive: true,
-      expiresAt: { $gt: now }
-    }).sort({ createdAt: -1 });
-
-    if (!session) {
-      return res.status(404).json({ message: 'No active session' });
-    }
-
-    res.status(200).json({
-      sessionId: session.sessionId,
-      timestamp: session.createdAt.toISOString(),
-      expiresAt: session.expiresAt.toISOString()
-    });
-  } catch (error) {
-    console.error('Error in getActiveSession:', error.stack || error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
-
-
-// POST /attendance/qr/mark  (employee)
-const markQRAttendance = async (req, res, next) => {
-  require('dotenv').config();
-  try {
-    console.log('🚀 QR API HIT - markQRAttendance called');
-    const { sessionId, latitude, longitude } = req.body;
-    const employeeId = req.user.id;
-    const organizationId = req.organizationId;
-    console.log('  sessionId :', sessionId);
-    console.log('  latitude  :', latitude, '| longitude:', longitude);
-    console.log('  employeeId:', employeeId, '| org:', organizationId);
-
-    if (!sessionId || latitude == null || longitude == null) {
-      return res.status(400).json({ message: 'sessionId, latitude and longitude are required' });
-    }
-
-
-    // 1. Validate session exists and is not expired
-    const now = new Date();
-    const session = await AttendanceSession.findOne({
-      organization: organizationId,
-      sessionId,
-      isActive: true,
-      expiresAt: { $gt: now }
-    });
-
-    if (!session) {
-      return res.status(400).json({
-        message: 'QR code is expired or invalid. Please ask HR to generate a new one.',
-        code: 'QR_EXPIRED'
-      });
-    }
-
-    // 2. Check geolocation – office coordinates (New Delhi default)
-    const OFFICE_LAT = parseFloat(process.env.OFFICE_LAT || '15.759406');
-    const OFFICE_LON = parseFloat(process.env.OFFICE_LON || '78.039299');
-    const MAX_DISTANCE_M = parseFloat(process.env.OFFICE_RADIUS_M || '150');
-
-    console.log("OFFICE LAT:", OFFICE_LAT);
-    console.log("OFFICE LON:", OFFICE_LON);
-    console.log("USER LAT:", latitude);
-    console.log("USER LON:", longitude);
-
-    const distanceM = haversineDistance(latitude, longitude, OFFICE_LAT, OFFICE_LON);
-
-    if (distanceM > MAX_DISTANCE_M) {
-      return res.status(400).json({
-        message: `You are ${Math.round(distanceM)}m away from the office. Must be within ${MAX_DISTANCE_M}m to mark attendance.`,
-        code: 'OUT_OF_RANGE',
-        distance: Math.round(distanceM)
-      });
-    }
-
-    // 3. Check for duplicate attendance today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const existingAttendance = await Attendance.findOne({
-      organization: organizationId,
-      employee: employeeId,
-      date: {
-        $gte: today,
-        $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
-      }
-    });
-
-    if (existingAttendance && existingAttendance.checkIn) {
-      return res.status(400).json({
-        message: 'Attendance already marked for today.',
-        code: 'DUPLICATE'
-      });
-    }
-
-    // 4. Mark attendance
-    let attendance;
-    if (existingAttendance) {
-      attendance = existingAttendance;
-      attendance.checkIn = {
-        time: now,
-        location: { latitude, longitude },
-        deviceId: req.headers['user-agent'],
-        ip: req.ip
-      };
-      attendance.status = 'present';
-    } else {
-      attendance = new Attendance({
-        organization: organizationId,
-        employee: employeeId,
-        date: today,
-        checkIn: {
-          time: now,
-          location: { latitude, longitude },
-          deviceId: req.headers['user-agent'],
-          ip: req.ip
-        },
-        status: 'present'
-      });
-    }
-
-    await attendance.save();
-
-    const populatedAttendance = await Attendance.findById(attendance._id)
-      .populate('employee', 'name email');
-
-    res.status(201).json({
-      message: 'Attendance marked successfully!',
-      attendance: populatedAttendance
-    });
-  } catch (error) {
-    console.error('Error in markQRAttendance:', error.stack || error);
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-};
-
-
 // GET /attendance/date/:date  (admin)
 const getAttendanceByDate = async (req, res) => {
   try {
@@ -590,12 +505,10 @@ module.exports = {
   getMyAttendance,
   getAllAttendance,
   getTodayAttendance,
+  getCurrentTimerStatus,
+  startAttendanceTimer,
   addManualAttendance,
   getAttendanceStats,
-  // QR Attendance
-  generateQRSession,
-  getActiveSession,
-  markQRAttendance,
   getAttendanceByDate,
   getAttendanceByEmployee
 };
