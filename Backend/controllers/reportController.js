@@ -3,6 +3,57 @@ const Employee = require('../models/Employee');
 const Chat = require('../models/Chat');
 const mongoose = require('mongoose');
 
+const REPORT_POPULATE = [
+  { path: 'reportedBy', select: 'name email role' },
+  { path: 'reportedUser', select: 'name email role' },
+  { path: 'reviewedBy', select: 'name email role' }
+];
+
+const isAdminRole = (role) => ['ADMIN', 'HR'].includes((role || '').toString().toUpperCase());
+
+const paginate = ({ page = 1, limit = 10 }) => {
+  const currentPage = Math.max(Number.parseInt(page, 10) || 1, 1);
+  const pageLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 10, 1), 100);
+  return {
+    currentPage,
+    pageLimit,
+    skip: (currentPage - 1) * pageLimit
+  };
+};
+
+const withStatus = (filter, status) => {
+  if (!status) return filter;
+  return { ...filter, status };
+};
+
+const getEmployeeReporterIds = async (organizationId) => {
+  const employees = await Employee.find({
+    organizationId,
+    role: { $nin: ['ADMIN', 'HR', 'admin', 'hr'] }
+  }).select('_id').lean();
+
+  return employees.map((employee) => employee._id);
+};
+
+const sendReports = async (res, filter, query) => {
+  const { currentPage, pageLimit, skip } = paginate(query);
+
+  const reports = await Report.find(filter)
+    .populate(REPORT_POPULATE)
+    .sort({ createdAt: -1 })
+    .limit(pageLimit)
+    .skip(skip);
+
+  const total = await Report.countDocuments(filter);
+
+  return res.status(200).json({
+    reports,
+    totalPages: Math.ceil(total / pageLimit),
+    currentPage,
+    total
+  });
+};
+
 // Create a new report
 const createReport = async (req, res) => {
   try {
@@ -10,10 +61,18 @@ const createReport = async (req, res) => {
     const reportedBy = req.user.id;
     const organizationId = req.organizationId;
 
+    if (isAdminRole(req.role)) {
+      return res.status(403).json({ message: 'Admins are not allowed to file reports' });
+    }
+
     if (!reportedUserId || !reason || !description) {
       return res.status(400).json({
         message: 'Reported user, reason, and description are required'
       });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(reportedUserId)) {
+      return res.status(400).json({ message: 'Invalid reported user' });
     }
 
     // Check if reported user exists and belongs to same organization
@@ -53,9 +112,7 @@ const createReport = async (req, res) => {
     console.log('Report saved successfully:', report._id);
 
     const populatedReport = await Report.findById(report._id)
-      .populate('reportedBy', 'name email')
-      .populate('reportedUser', 'name email')
-      .populate('reviewedBy', 'name email');
+      .populate(REPORT_POPULATE);
 
     // Automatically create a chat thread linked to the report
     const chat = new Chat({
@@ -83,29 +140,19 @@ const getAllReports = async (req, res) => {
   try {
     const { status, page = 1, limit = 10 } = req.query;
     const organizationId = req.organizationId;
-    console.log("getAllReports: organizationId ->", organizationId);
+    const currentUserId = req.user.id;
 
-    const filter = { organization: organizationId };
-    if (status) {
-      filter.status = status;
+    if (!isAdminRole(req.role)) {
+      return res.status(403).json({ message: 'Admin access only' });
     }
 
-    const reports = await Report.find(filter)
-      .populate('reportedBy', 'name email')
-      .populate('reportedUser', 'name email')
-      .populate('reviewedBy', 'name email')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const employeeReporterIds = await getEmployeeReporterIds(organizationId);
+    const filter = withStatus({
+      organization: organizationId,
+      reportedBy: { $in: employeeReporterIds, $ne: currentUserId }
+    }, status);
 
-    const total = await Report.countDocuments(filter);
-
-    res.status(200).json({
-      reports,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
-    });
+    return sendReports(res, filter, { page, limit });
   } catch (error) {
     console.error('Error in getAllReports:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -119,31 +166,21 @@ const getMyReports = async (req, res) => {
     const reportedBy = req.user.id;
     const organizationId = req.organizationId;
 
-    const filter = {
-      organization: organizationId,
-      reportedBy
-    };
-    console.log("getMyReports: filter ->", filter);
-    if (status) {
-      filter.status = status;
+    if (isAdminRole(req.role)) {
+      return res.status(200).json({
+        reports: [],
+        totalPages: 0,
+        currentPage: Number.parseInt(page, 10) || 1,
+        total: 0
+      });
     }
 
-    const reports = await Report.find(filter)
-      .populate('reportedBy', 'name email')
-      .populate('reportedUser', 'name email')
-      .populate('reviewedBy', 'name email')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const filter = withStatus({
+      organization: organizationId,
+      reportedBy
+    }, status);
 
-    const total = await Report.countDocuments(filter);
-
-    res.status(200).json({
-      reports,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
-    });
+    return sendReports(res, filter, { page, limit });
   } catch (error) {
     console.error('Error in getMyReports:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -157,29 +194,12 @@ const getReportsAgainstMe = async (req, res) => {
     const reportedUser = req.user.id;
     const organizationId = req.organizationId;
 
-    const filter = {
+    const filter = withStatus({
       organization: organizationId,
       reportedUser
-    };
-    if (status) {
-      filter.status = status;
-    }
+    }, status);
 
-    const reports = await Report.find(filter)
-      .populate('reportedBy', 'name email')
-      .populate('reviewedBy', 'name email')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Report.countDocuments(filter);
-
-    res.status(200).json({
-      reports,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      total
-    });
+    return sendReports(res, filter, { page, limit });
   } catch (error) {
     console.error('Error in getReportsAgainstMe:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -192,13 +212,19 @@ const updateReportStatus = async (req, res) => {
     const { reportId } = req.params;
     const { status, reviewNotes, resolution } = req.body;
     const currentUserId = req.user.id;
-    const userRole = req.role;
 
-    if (userRole === 'ADMIN' || userRole === 'HR') {
-      return res.status(403).json({ message: 'Admin/HR not authorized to update report status' });
+    if (isAdminRole(req.role)) {
+      return res.status(403).json({ message: 'Admins are not allowed to update report status' });
     }
 
-    const report = await Report.findById(reportId);
+    if (!mongoose.Types.ObjectId.isValid(reportId)) {
+      return res.status(400).json({ message: 'Invalid report id' });
+    }
+
+    const report = await Report.findOne({
+      _id: reportId,
+      organization: req.organizationId
+    });
 
     if (!report) {
       return res.status(404).json({ message: 'Report not found' });
@@ -228,9 +254,7 @@ const updateReportStatus = async (req, res) => {
     await report.save();
 
     const updatedReport = await Report.findById(reportId)
-      .populate('reportedBy', 'name email')
-      .populate('reportedUser', 'name email')
-      .populate('reviewedBy', 'name email');
+      .populate(REPORT_POPULATE);
 
     res.status(200).json(updatedReport);
   } catch (error) {
@@ -248,7 +272,15 @@ const getReportStats = async (req, res) => {
       return res.status(400).json({ message: 'Organization ID is required' });
     }
 
-    const filter = { organization: organizationId };
+    if (!isAdminRole(req.role)) {
+      return res.status(403).json({ message: 'Admin access only' });
+    }
+
+    const employeeReporterIds = await getEmployeeReporterIds(organizationId);
+    const filter = {
+      organization: organizationId,
+      reportedBy: { $in: employeeReporterIds, $ne: req.user.id }
+    };
 
     const pendingCount = await Report.countDocuments({ ...filter, status: 'pending' });
     const underReviewCount = await Report.countDocuments({ ...filter, status: 'under_review' });

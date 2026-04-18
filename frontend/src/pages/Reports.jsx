@@ -17,6 +17,13 @@ const getUserIdFromStorage = () => {
   }
 };
 
+const getIsAdminFromStorage = () => {
+  const role = localStorage.getItem('userRole')?.toUpperCase();
+  return role === 'ADMIN' || role === 'HR';
+};
+
+const getReportUserId = (value) => (value?._id || value || '').toString();
+
 const STATUS_CONFIG = {
   pending: { label: 'Pending', color: '#b45309', bg: '#fef3c7', dot: '#d97706' },
   under_review: { label: 'Under Review', color: '#1d4ed8', bg: '#dbeafe', dot: '#3b82f6' },
@@ -141,39 +148,69 @@ const Reports = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
   const [selectedReport, setSelectedReport] = useState(null);
-  const [activeTab, setActiveTab] = useState('my-reports');
+  const [activeTab, setActiveTab] = useState(() => getIsAdminFromStorage() ? 'employee-filed' : 'my-reports');
   const [stats, setStats] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin] = useState(getIsAdminFromStorage);
   const [currentUserId] = useState(getUserIdFromStorage);
   const [formData, setFormData] = useState(EMPTY_FORM);
   const [updateData, setUpdateData] = useState(EMPTY_UPDATE);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
-    const role = localStorage.getItem('userRole')?.toUpperCase();
-    const admin = role === 'ADMIN' || role === 'HR';
-    setIsAdmin(admin);
-    if (admin) setActiveTab('all');
-  }, []);
-
-  useEffect(() => {
-    fetchEmployees();
-    fetchMyReports();
-    fetchReportsAgainstMe();
-    if (isAdmin) {
-      fetchAllReports();
-      fetchStats();
-    }
+    loadReportData();
   }, [isAdmin]);
 
-  const fetchEmployees = async () => { try { const r = await API.get('/employees'); setEmployees(r.data); } catch (e) { console.error(e); } };
-  const fetchAllReports = async () => { try { const r = await API.get('/reports/all'); setReports(r.data.reports || []); } catch (e) { console.error(e); } };
-  const fetchMyReports = async () => { try { const r = await API.get('/reports/my-reports'); setMyReports(r.data.reports || []); } catch (e) { console.error(e); } };
-  const fetchReportsAgainstMe = async () => { try { const r = await API.get('/reports/against-me'); setReportsAgainstMe(r.data.reports || []); } catch (e) { console.error(e); } };
-  const fetchStats = async () => { try { const r = await API.get('/reports/stats'); setStats(r.data); } catch (e) { console.error(e); } };
+  const loadReportData = async () => {
+    setIsLoading(true);
+    setLoadError('');
+    try {
+      const requests = isAdmin
+        ? [fetchAllReports(), fetchReportsAgainstMe(), fetchStats()]
+        : [fetchEmployees(), fetchMyReports(), fetchReportsAgainstMe()];
+
+      await Promise.all(requests);
+    } catch (e) {
+      console.error(e);
+      setLoadError('Unable to load reports right now. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchEmployees = async () => {
+    const r = await API.get('/employees');
+    setEmployees(r.data || []);
+  };
+
+  const fetchAllReports = async () => {
+    const r = await API.get('/reports/all');
+    setReports(r.data.reports || []);
+  };
+
+  const fetchMyReports = async () => {
+    const r = await API.get('/reports/my-reports');
+    setMyReports(r.data.reports || []);
+  };
+
+  const fetchReportsAgainstMe = async () => {
+    const r = await API.get('/reports/against-me');
+    setReportsAgainstMe(r.data.reports || []);
+  };
+
+  const fetchStats = async () => {
+    const r = await API.get('/reports/stats');
+    setStats(r.data);
+  };
 
   const createReport = async () => {
+    if (isAdmin) {
+      setError('Admins are not allowed to file reports.');
+      return;
+    }
+
     setIsSubmitting(true);
     setError('');
     try {
@@ -189,15 +226,27 @@ const Reports = () => {
     }
   };
 
+  const canUpdateStatus = (report) => {
+    if (isAdmin || !report) return false;
+    return getReportUserId(report.reportedBy) === currentUserId?.toString();
+  };
+
   const updateReportStatus = async (reportId) => {
+    if (!canUpdateStatus(selectedReport)) {
+      setError('You can update only reports filed by you.');
+      return;
+    }
+
     setIsSubmitting(true);
+    setError('');
     try {
       await API.patch(`/reports/${reportId}/status`, updateData);
       setShowViewModal(false);
       setUpdateData(EMPTY_UPDATE);
       fetchMyReports();
-      if (isAdmin) { fetchAllReports(); fetchStats(); }
+      fetchReportsAgainstMe();
     } catch (e) {
+      setError(e.response?.data?.message || 'Unable to update this report.');
       console.error(e);
     } finally {
       setIsSubmitting(false);
@@ -205,20 +254,26 @@ const Reports = () => {
   };
 
   const displayReports =
-    activeTab === 'all' ? reports :
+    activeTab === 'employee-filed' ? reports :
       activeTab === 'my-reports' ? myReports :
         reportsAgainstMe;
 
   const totalReports = stats?.statusStats?.reduce((a, s) => a + s.count, 0) ?? 0;
 
   const tabs = [
-    ...(isAdmin ? [{ id: 'all', label: 'All Reports', count: reports.length }] : []),
-    { id: 'my-reports', label: 'Filed by Me', count: myReports.length },
-    ...(isAdmin ? [{ id: 'against-me', label: 'Against Me', count: reportsAgainstMe.length }] : []),
+    ...(isAdmin
+      ? [
+          { id: 'employee-filed', label: 'Filed by Employees', count: reports.length },
+          { id: 'against-me', label: 'Filed Against Me', count: reportsAgainstMe.length },
+        ]
+      : [
+          { id: 'my-reports', label: 'Filed by Me', count: myReports.length },
+          { id: 'against-me', label: 'Against Me', count: reportsAgainstMe.length },
+        ]),
   ];
 
   const reporterLabel = (report) => {
-    const rid = (report.reportedBy?._id || report.reportedBy)?.toString();
+    const rid = getReportUserId(report.reportedBy);
     if (rid === currentUserId?.toString()) return 'You';
     if (report.anonymous && !isAdmin) return 'Anonymous';
     return report.reportedBy?.name || 'N/A';
@@ -291,9 +346,19 @@ const Reports = () => {
             ))}
           </div>
 
+          {loadError && (
+            <div style={{ margin: 20, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, color: '#dc2626' }}>
+              {loadError}
+            </div>
+          )}
+
           {/* Table */}
           <div style={{ overflowX: 'auto' }}>
-            {displayReports.length === 0 ? (
+            {isLoading ? (
+              <div style={{ padding: '56px 24px', textAlign: 'center', color: '#6b7280' }}>
+                Loading reports...
+              </div>
+            ) : displayReports.length === 0 ? (
               <div style={{ padding: '56px 24px', textAlign: 'center', color: '#9ca3af' }}>
                 <div style={{ fontSize: 40, marginBottom: 8 }}>📋</div>
                 <p style={{ margin: 0, fontSize: 15, fontWeight: 500, color: '#374151' }}>No reports found</p>
@@ -348,7 +413,7 @@ const Reports = () => {
                       </td>
                       <td style={{ padding: '14px 16px' }}>
                         <button
-                          onClick={() => { setSelectedReport(report); setUpdateData(EMPTY_UPDATE); setShowViewModal(true); }}
+                          onClick={() => { setSelectedReport(report); setUpdateData(EMPTY_UPDATE); setError(''); setShowViewModal(true); }}
                           style={{
                             padding: '6px 14px', border: '1px solid #d1d5db', borderRadius: 7,
                             background: '#fff', fontSize: 13, color: '#374151',
@@ -476,11 +541,11 @@ const Reports = () => {
 
         {/* ── View Report Modal ── */}
         {showViewModal && selectedReport && (() => {
-          const reporterId = (selectedReport.reportedBy?._id || selectedReport.reportedBy)?.toString();
+          const reporterId = getReportUserId(selectedReport.reportedBy);
           const isOwner = reporterId === currentUserId?.toString();
 
           return (
-            <Modal title="Report Details" onClose={() => setShowViewModal(false)} width={620}>
+            <Modal title="Report Details" onClose={() => { setShowViewModal(false); setError(''); }} width={620}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
                 {/* Top row: date + status */}
@@ -499,7 +564,7 @@ const Reports = () => {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                   <DetailItem label="Filed By">
-                    {selectedReport.anonymous ? (
+                    {selectedReport.anonymous && !isAdmin ? (
                       <span style={{ fontSize: 13, color: '#6b7280', fontStyle: 'italic' }}>Anonymous</span>
                     ) : selectedReport.reportedBy?.name}
                   </DetailItem>
@@ -659,58 +724,15 @@ const Reports = () => {
                   </>
                 )}
 
-                {/* Admin update section */}
-                {isAdmin && (
-                  <>
-                    <Divider />
-                    <div>
-                      <h3 style={{ margin: '0 0 14px', fontSize: 15, fontWeight: 600, color: '#111827' }}>Admin Actions</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                        <Field label="Update Status">
-                          <select value={updateData.status} onChange={e => setUpdateData(p => ({ ...p, status: e.target.value }))} style={selectStyle}>
-                            <option value="">Select status…</option>
-                            <option value="under_review">Under Review</option>
-                            <option value="resolved">Resolved</option>
-                            <option value="dismissed">Dismissed</option>
-                          </select>
-                        </Field>
-                        <Field label="Review Notes">
-                          <textarea
-                            value={updateData.reviewNotes}
-                            onChange={e => setUpdateData(p => ({ ...p, reviewNotes: e.target.value }))}
-                            rows={3}
-                            placeholder="Internal notes…"
-                            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }}
-                          />
-                        </Field>
-                        <Field label="Resolution">
-                          <textarea
-                            value={updateData.resolution}
-                            onChange={e => setUpdateData(p => ({ ...p, resolution: e.target.value }))}
-                            rows={3}
-                            placeholder="Outcome / resolution details…"
-                            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }}
-                          />
-                        </Field>
-                        <button
-                          onClick={() => updateReportStatus(selectedReport._id)}
-                          disabled={!updateData.status || isSubmitting}
-                          style={{
-                            padding: '10px 0', background: '#2563eb', color: '#fff',
-                            border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 500,
-                            cursor: 'pointer', opacity: (!updateData.status || isSubmitting) ? 0.5 : 1,
-                          }}
-                        >
-                          {isSubmitting ? 'Saving…' : 'Save Changes'}
-                        </button>
-                      </div>
-                    </div>
-                  </>
+                {error && (
+                  <p style={{ margin: 0, padding: '10px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, color: '#dc2626' }}>
+                    {error}
+                  </p>
                 )}
 
                 <Divider />
                 <button
-                  onClick={() => setShowViewModal(false)}
+                  onClick={() => { setShowViewModal(false); setError(''); }}
                   style={{
                     padding: '10px 0', background: '#f3f4f6', color: '#374151',
                     border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: 'pointer',
