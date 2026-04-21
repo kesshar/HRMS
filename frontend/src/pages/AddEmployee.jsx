@@ -14,7 +14,6 @@ function AddEmployee() {
     role: "",
     password: "",
     skills: "",
-    walletAddress: "",
     customDepartment: "",
   });
 
@@ -396,32 +395,6 @@ function AddEmployee() {
                       <p className="text-sm text-rose-500 mt-1.5">{errors.password}</p>
                     )}
                     <p className="text-xs text-slate-400 mt-1">Minimum 6 characters</p>
-                  </div>
-
-                  {/* Wallet Address Field */}
-                  <div className="space-y-1.5">
-                    <label className="block text-sm font-medium text-slate-700">
-                      Wallet Address
-                    </label>
-                    <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <svg className="h-5 w-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                            d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
-                        </svg>
-                      </div>
-                      <input
-                        type="text"
-                        name="walletAddress"
-                        value={formData.walletAddress}
-                        onChange={handleChange}
-                        placeholder="0x..."
-                        className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl 
-                                 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 
-                                 focus:border-indigo-500 transition-all text-slate-700 
-                                 placeholder:text-slate-400"
-                      />
-                    </div>
                   </div>
                 </div>
               </div>

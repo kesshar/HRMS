@@ -116,13 +116,6 @@ function EmployeeProfile() {
           </div>
 
           <div className="bg-gray-50 p-4 rounded-lg">
-            <h4 className="font-semibold mb-2">Wallet Address</h4>
-            <p className="text-gray-700 break-all">
-              {profile.walletAddress || "Not added"}
-            </p>
-          </div>
-
-          <div className="bg-gray-50 p-4 rounded-lg">
             <h4 className="font-semibold mb-2">Account Status</h4>
             <p
               className={`font-bold ${

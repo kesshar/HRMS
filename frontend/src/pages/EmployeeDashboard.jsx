@@ -1,7 +1,6 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import API from "../services/api";
-import { getContract } from "../contracts/utils/contract";
 
 function EmployeeDashboard() {
   const [tasks, setTasks] = useState([]);
@@ -9,22 +8,8 @@ function EmployeeDashboard() {
   const [loading, setLoading] = useState(true);
   const [updatingTaskId, setUpdatingTaskId] = useState(null);
   const [greeting, setGreeting] = useState("");
-  const [wallet, setWallet] = useState(null);
   const [leaveSummary, setLeaveSummary] = useState(null);
   const [myPerformance, setMyPerformance] = useState(null);
-
-  const connectWallet = async () => {
-    if (!window.ethereum) {
-      alert("Install MetaMask");
-      return;
-    }
-
-    const accounts = await window.ethereum.request({
-      method: "eth_requestAccounts",
-    });
-
-    setWallet(accounts[0]);
-  };
 
   const token = localStorage.getItem("employeeToken");
 
@@ -91,27 +76,11 @@ function EmployeeDashboard() {
     try {
       setUpdatingTaskId(taskId);
 
-      // 1️⃣ Update MongoDB first
       await API.put(
         `/tasks/${taskId}/status`,
         { status: newStatus },
         config
       );
-
-      // 2️⃣ If status is Completed → log on blockchain
-      if (newStatus === "Completed") {
-        if (!wallet) {
-          alert("Please connect your wallet first");
-          return;
-        }
-
-        const contract = await getContract();
-        const tx = await contract.logTask(taskId);
-        await tx.wait();
-
-        console.log("Blockchain TX:", tx.hash);
-        alert("Task recorded on blockchain!");
-      }
 
       await fetchDashboardData();
     } catch (error) {
@@ -180,21 +149,6 @@ function EmployeeDashboard() {
               </p>
             </div>
           </div>
-        </div>
-
-        <div className="mt-4">
-          {!wallet ? (
-            <button
-              onClick={connectWallet}
-              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
-            >
-              Connect Wallet
-            </button>
-          ) : (
-            <p className="text-sm text-emerald-600">
-              Wallet Connected: {wallet.slice(0, 6)}...{wallet.slice(-4)}
-            </p>
-          )}
         </div>
 
         {/* Stats Grid */}

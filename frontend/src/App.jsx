@@ -104,6 +104,7 @@ function App() {
         >
           <Route index element={<Navigate to="/employee/dashboard" replace />} />
           <Route path="dashboard" element={<EmployeeDashboard />} />
+          <Route path="leaderboard" element={<Leaderboard />} />
           <Route path="profile" element={<EmployeeProfile />} />
           <Route path="groups" element={<EmployeeGroups />} />
           <Route path="chat" element={<Chat />} />
