@@ -39,12 +39,6 @@ const employeeSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
-
-    walletAddress: {
-      type: String,
-      default: "",
-    },
-
     isActive: {
       type: Boolean,
       default: true,
